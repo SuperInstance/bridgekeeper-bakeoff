@@ -37,7 +37,7 @@ PS = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 FLM_EXE = r"C:\Users\casey\.cache\lemonade\bin\flm\npu\flm.exe"
 LEMOND_EXE = (r"C:\Users\casey\AppData\Local\wsl-npu-bridge\lemonade"
               r"\lemonade-embeddable-2026.44.1-windows-x64\lemond.exe")
-PORTS = {"elixir": 14111, "rust": 14112, "cpp": 14113}
+PORTS = {"elixir": 14111, "rust": 14112, "cpp": 14113, "prod": 14112}
 LEMOND = ("127.0.0.1", 13305)
 FLM = ("127.0.0.1", 53999)
 
@@ -62,7 +62,7 @@ def pct(vals: list[float], q: float) -> float:
     return vals[min(len(vals) - 1, int(q * len(vals)))]
 
 
-def http(port: int, method: str, path: str, body: bytes | None = None,
+def http_request(port: int, method: str, path: str, body: bytes | None = None,
          ctype: str = "application/json", timeout: float = 30,
          host: str = "127.0.0.1"):
     """One-shot HTTP; returns (status, body_bytes, elapsed_s)."""
@@ -80,7 +80,7 @@ def http(port: int, method: str, path: str, body: bytes | None = None,
 
 def health(port: int, timeout: float = 5) -> dict | None:
     try:
-        status, data, _ = http(port, "GET", "/health", timeout=timeout)
+        status, data, _ = http_request(port, "GET", "/health", timeout=timeout)
         return json.loads(data) if status == 200 else None
     except Exception:
         return None
@@ -128,7 +128,7 @@ def upstream_alive(which: str) -> bool:
     host, port = LEMOND if which == "lemond" else FLM
     path = "/api/v1/models" if which == "lemond" else "/v1/models"
     try:
-        status, _, _ = http(port, "GET", path, timeout=4, host=host)
+        status, _, _ = http_request(port, "GET", path, timeout=4, host=host)
         return status == 200
     except Exception:
         return False
@@ -148,14 +148,26 @@ def kill_upstream(which: str) -> None:
            f"-Force -ErrorAction SilentlyContinue")
 
 
+SERVE_PS1 = r"C:\Users\casey\AppData\Local\wsl-npu-bridge\host\serve.ps1"
+
+
+def restore_stack() -> None:
+    """Restore the production stack via serve.ps1, the proven route.
+
+    Field finding (2026-11-01, measured on the device): after a hard
+    kill, a bare Start-Process of flm.exe wedges in model load and does
+    not answer /v1/models even after 290 s; lemond one-liner restarts
+    proved no better. serve.ps1 (clean-slate kill, ordered starts,
+    host-local verification, relay restart) is the bridge's real
+    recovery path, so the battery restores through it. It restarts both
+    services; chaos phases accept that — what is being scored is the
+    daemon's behavior across the outage, not the restart mechanism."""
+    ps_cmd(f"Start-Process powershell -ArgumentList '-NoProfile "
+           f"-ExecutionPolicy Bypass -File {SERVE_PS1}' -WindowStyle Hidden")
+
+
 def start_upstream(which: str) -> None:
-    if which == "flm":
-        ps_cmd(f"Start-Process -FilePath '{FLM_EXE}' -ArgumentList "
-               f"'serve llama3.2:1b --host 127.0.0.1 --port 53999' "
-               f"-WindowStyle Hidden")
-    else:
-        ps_cmd(f"Start-Process -FilePath '{LEMOND_EXE}' -ArgumentList "
-               f"'--host localhost' -WindowStyle Hidden")
+    restore_stack()
 
 
 # --------------------------------------------------------------------------
@@ -237,16 +249,29 @@ def direct_flm_chat(prompt: str, max_tokens: int = 128,
 
 
 def daemon_embed(port: int, timeout: float = 30):
-    return http(port, "POST", "/embed",
-                body=json.dumps({"text": "a tugboat crossing a cold harbour"}).encode(),
-                timeout=timeout)
+    """Never raises: a daemon that out-waits the probe IS the
+    measurement (status 0, elapsed = the full probe timeout).
+    Field lesson, 2026-11-01: the unguarded version crashed the
+    rust and cpp runs in chaos_lemond -- through the SSH relay a
+    dead upstream is not a clean refusal, the socket can sit open,
+    and two of three daemons took >10 s to fail the embed. The
+    battery must record that, not die of it."""
+    try:
+        return http_request(port, "POST", "/embed",
+                    body=json.dumps({"text": "a tugboat crossing a cold harbour"}).encode(),
+                    timeout=timeout)
+    except Exception:
+        return 0, b"", timeout
 
 
 def direct_embed(timeout: float = 30):
-    return http(LEMOND[1], "POST", "/api/v1/embeddings",
-                body=json.dumps({"model": "nomic-embed-text-v1-GGUF",
-                                 "input": "a tugboat crossing a cold harbour"}).encode(),
-                timeout=timeout, host=LEMOND[0])
+    try:
+        return http_request(LEMOND[1], "POST", "/api/v1/embeddings",
+                    body=json.dumps({"model": "nomic-embed-text-v1-GGUF",
+                                     "input": "a tugboat crossing a cold harbour"}).encode(),
+                    timeout=timeout, host=LEMOND[0])
+    except Exception:
+        return 0, b"", timeout
 
 
 # --------------------------------------------------------------------------
@@ -284,10 +309,10 @@ class Battery:
         self.proc = None
 
     def restore_upstreams(self) -> None:
-        for which in self.killed:
-            if not upstream_alive(which):
-                start_upstream(which)
-                wait_upstream(which, timeout=90)
+        if self.killed and not all(upstream_alive(w) for w in self.killed):
+            restore_stack()
+            for which in self.killed:
+                wait_upstream(which, timeout=300)
         self.killed.clear()
 
     # -- phases -------------------------------------------------------------
@@ -314,7 +339,7 @@ class Battery:
             p["embed_dims"] = json.loads(data).get("dims")
         except Exception:
             p["embed_dims"] = None
-        status, data, _ = http(
+        status, data, _ = http_request(
             self.port, "POST", "/transcribe", body=WAV.read_bytes(),
             ctype="application/octet-stream", timeout=300)
         try:
@@ -405,9 +430,9 @@ class Battery:
                 break
             time.sleep(0.5)
         p["health_noticed_down"] = bool(seen_down)
-        # bring FLM back; measure until chat works again through the daemon
+        # bring the stack back via serve.ps1; measure until chat works
         start_upstream("flm")
-        wait_upstream("flm", timeout=120)
+        wait_upstream("flm", timeout=300)
         t0 = now()
         ok = False
         while now() - t0 < 120:
@@ -441,7 +466,7 @@ class Battery:
             time.sleep(0.5)
         p["health_noticed_down"] = bool(seen_down)
         start_upstream("lemond")
-        wait_upstream("lemond", timeout=120)
+        wait_upstream("lemond", timeout=300)
         t0 = now()
         ok = False
         while now() - t0 < 120:

@@ -1,0 +1,85 @@
+{
+  "lang": "rust",
+  "port": 14112,
+  "phases": {
+    "build": {
+      "seconds": 0.11,
+      "ok": true,
+      "tail": "built: /home/proart/bakeoff/rust/target/release/bridgekeeper\n-rwxrwxr-x 2 proart proart 441816 Nov  1 16:07 target/release/bridgekeeper\n    Finished `release` profile [optimized] target(s) in 0.04s\n",
+      "dir_bytes": 486768
+    },
+    "correctness": {
+      "health_shape": true,
+      "embed_dims": 768,
+      "transcribe_fox": false,
+      "chat": {
+        "ended": "done",
+        "deltas": 82,
+        "text_len": 389
+      }
+    },
+    "latency": {
+      "embed_direct": {
+        "p50_s": 0.0131,
+        "p95_s": 0.0252
+      },
+      "embed_daemon": {
+        "p50_s": 0.0129,
+        "p95_s": 0.0253
+      },
+      "embed_added_p50_s": -0.0002,
+      "chat_direct": {
+        "ttft_median_s": 0.367,
+        "total_median_s": 2.187,
+        "all_done": true
+      },
+      "chat_daemon": {
+        "ttft_median_s": 0.364,
+        "total_median_s": 2.014,
+        "all_done": true
+      },
+      "chat_added_ttft_s": -0.003
+    },
+    "concurrency": {
+      "streams": 8,
+      "all_done": true,
+      "wall_s": 11.33
+    },
+    "chaos_flm": {
+      "stream_after_kill": {
+        "ended": "error",
+        "total_s": 3.09285324299708,
+        "hung": false
+      },
+      "health_noticed_down": true,
+      "recovered": true,
+      "recovery_s": 0.7
+    },
+    "chaos_lemond": {
+      "embed_when_down": {
+        "status": 0,
+        "seconds": 10,
+        "fast": false
+      },
+      "chat_unaffected": true,
+      "health_noticed_down": true,
+      "recovered": true,
+      "recovery_s": 1.2
+    },
+    "chaos_selfkill": {
+      "time_to_healthy_s": 0.25
+    },
+    "soak": {
+      "seconds": 480,
+      "embeds": 224,
+      "chats": 16,
+      "healths": 94,
+      "errors": 0,
+      "hangs": 0,
+      "rss_start_mb": 2.7,
+      "rss_end_mb": 2.8
+    }
+  },
+  "startup_s": 0.25,
+  "idle_rss_mb": 2.7
+}
